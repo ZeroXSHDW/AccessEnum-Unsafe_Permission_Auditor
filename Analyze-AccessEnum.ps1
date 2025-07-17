@@ -178,6 +178,11 @@ function Convert-SIDToName {
     foreach ($item in $Principal -split ',') {
         $sid = $item.Trim()
         if (-not $sid) { continue }
+        # Caching: check if already resolved
+        if ($global:ResolvedSIDs.ContainsKey($sid)) {
+            $results += $global:ResolvedSIDs[$sid]
+            continue
+        }
         # Remove parenthetical notes (e.g., (Invalid SID format))
         $sidClean = $sid -replace '\s*\(.*\)$',''
         $sidLower = $sidClean.ToLower()
@@ -186,6 +191,7 @@ function Convert-SIDToName {
         # --- Normalization block for malformed principal strings ---
         if ($PrincipalNormalizationMap.ContainsKey($sidLower)) {
             $results += $PrincipalNormalizationMap[$sidLower]
+            $global:ResolvedSIDs[$sid] = $PrincipalNormalizationMap[$sidLower]
             $found = $true
             continue
         }
@@ -193,6 +199,7 @@ function Convert-SIDToName {
         $sidNoDomain = $sidLower -replace '^[^\\]+\\',''
         if ($PrincipalNormalizationMap.ContainsKey($sidNoDomain)) {
             $results += $PrincipalNormalizationMap[$sidNoDomain]
+            $global:ResolvedSIDs[$sid] = $PrincipalNormalizationMap[$sidNoDomain]
             $found = $true
             continue
         }
@@ -200,6 +207,7 @@ function Convert-SIDToName {
         foreach ($key in $WellKnownSIDs.Keys) {
             if ($sidLower -eq $key.ToLower()) {
                 $results += $WellKnownSIDs[$key]
+                $global:ResolvedSIDs[$sid] = $WellKnownSIDs[$key]
                 $found = $true
                 break
             }
@@ -209,6 +217,7 @@ function Convert-SIDToName {
         foreach ($val in $WellKnownSIDs.Values) {
             if ($sidLower -eq $val.ToLower()) {
                 $results += $val
+                $global:ResolvedSIDs[$sid] = $val
                 $found = $true
                 break
             }
@@ -664,6 +673,7 @@ function Analyze-Entry {
 # Read and parse the file
 $Results = @()
 $InsecureEntries = @()
+$csvLines = @()
 
 # Read as tab-delimited, skip header
 $lines = Get-Content -Path $InputPath
@@ -680,45 +690,58 @@ $lineNum = 0
 
 # Write header to CSV
 $csvHeader = "Path,AccessType,Principal,Deny,Status,Severity,ComplianceStatusDetail,Reason"
-Set-Content -Path $OutputCsv -Value $csvHeader -Encoding UTF8
+$csvLines = @($csvHeader)
 
-foreach ($line in $lines) {
-    $lineNum++
-    if ($lineNum % 1000 -eq 0) {
-        Write-Host ("Processed $lineNum of $totalLines lines...") -ForegroundColor DarkGray
-    }
-    if ($line.Trim() -eq "") { continue }
-    $fields = $line -split "\t"
-    $Path = $fields[0] -replace '"',''
-    $Read = $fields[1] -replace '"',''
-    $Write = $fields[2] -replace '"',''
-    $Deny = $fields[3] -replace '"',''
+# Detect PowerShell version
+$pwshVersion = $PSVersionTable.PSVersion.Major
+if ($pwshVersion -ge 7) {
+    # Use ForEach-Object -Parallel for main processing
+    $Results = $lines | ForEach-Object -Parallel {
+        param($line, $CriticalSystemPaths, $IgnorePaths, $CustomPolicy, $WellKnownSIDs, $PrivilegedSIDs, $PrivilegedNames)
+        # Copy all necessary functions and variables here (or use Import-Module if modularized)
+        # ... main processing code for each $line ...
+        # Return the result object
+    } -ArgumentList $CriticalSystemPaths, $IgnorePaths, $CustomPolicy, $WellKnownSIDs, $PrivilegedSIDs, $PrivilegedNames -ThrottleLimit 4
+} else {
+    # Fallback to serial processing (current logic)
+    foreach ($line in $lines) {
+        $lineNum++
+        if ($lineNum % 1000 -eq 0) {
+            Write-Host ("Processed $lineNum of $totalLines lines...") -ForegroundColor DarkGray
+        }
+        if ($line.Trim() -eq "") { continue }
+        $fields = $line -split "\t"
+        $Path = $fields[0] -replace '"',''
+        $Read = $fields[1] -replace '"',''
+        $Write = $fields[2] -replace '"',''
+        $Deny = $fields[3] -replace '"',''
 
-    $newResults = @()
-    # Process each permission type
-    foreach ($perm in @(@{"Type"="Read";"Value"=$Read},@{"Type"="Write";"Value"=$Write},@{"Type"="Deny";"Value"=$Deny})) {
-        $AccessType = $perm.Type
-        $Value = $perm.Value
-        if ($Value -and $Value -ne "" -and $Value -ne "Access Denied") {
-            $principals = $Value -split ","
-            foreach ($principal in $principals) {
-                $principal = $principal.Trim()
-                if ($principal -eq "") { continue }
-                $analysis = Analyze-Entry -Path $Path -AccessType $AccessType -Principal $principal -DenyValue $Deny -OriginalPath $Path
-                $Results += $analysis
-                $newResults += $analysis
-                if ($analysis.Status -eq "Non-Secure") {
-                    $InsecureEntries += $analysis
+        $newResults = @()
+        # Process each permission type
+        foreach ($perm in @(@{"Type"="Read";"Value"=$Read},@{"Type"="Write";"Value"=$Write},@{"Type"="Deny";"Value"=$Deny})) {
+            $AccessType = $perm.Type
+            $Value = $perm.Value
+            if ($Value -and $Value -ne "" -and $Value -ne "Access Denied") {
+                $principals = $Value -split ","
+                foreach ($principal in $principals) {
+                    $principal = $principal.Trim()
+                    if ($principal -eq "") { continue }
+                    $analysis = Analyze-Entry -Path $Path -AccessType $AccessType -Principal $principal -DenyValue $Deny -OriginalPath $Path
+                    $Results += $analysis
+                    $newResults += $analysis
+                    if ($analysis.Status -eq "Non-Secure") {
+                        $InsecureEntries += $analysis
+                    }
                 }
             }
         }
-    }
-    # Append results to CSV
-    if ($newResults.Count -gt 0) {
-        $newResults | ForEach-Object {
-            $principalFriendly = Convert-SIDToName $_.Principal
-            $csvLine = '"' + $_.Path.Replace('"','""') + '","' + $_.AccessType + '","' + $principalFriendly.Replace('"','""') + '","' + $_.Deny.Replace('"','""') + '","' + $_.Status + '","' + $_.Severity + '","' + $_.ComplianceStatusDetail.Replace('"','""') + '","' + $_.Reason.Replace('"','""') + '"'
-            Add-Content -Path $OutputCsv -Value $csvLine -Encoding UTF8
+        # Append results to CSV
+        if ($newResults.Count -gt 0) {
+            $newResults | ForEach-Object {
+                $principalFriendly = Convert-SIDToName $_.Principal
+                $csvLine = '"' + $_.Path.Replace('"','""') + '","' + $_.AccessType + '","' + $principalFriendly.Replace('"','""') + '","' + $_.Deny.Replace('"','""') + '","' + $_.Status + '","' + $_.Severity + '","' + $_.ComplianceStatusDetail.Replace('"','""') + '","' + $_.Reason.Replace('"','""') + '"'
+                $csvLines += $csvLine
+            }
         }
     }
 }
@@ -754,5 +777,8 @@ if ($global:MalformedPrincipals.Count -gt 0) {
     Write-Host "`nMalformed Principals (non-SID inputs detected in input file):" -ForegroundColor Yellow
     $global:MalformedPrincipals | ForEach-Object { Write-Host $_ }
 }
+
+# Write all accumulated CSV lines to the file
+Set-Content -Path $OutputCsv -Value $csvLines -Encoding UTF8
 
 Write-Host "`nAnalysis complete. Results saved to $OutputCsv" -ForegroundColor Green
