@@ -29,7 +29,8 @@ function Load-HashtableCache {
             Write-Host "Loaded hashtable cache from $Path" -ForegroundColor DarkGray
             return $ht
         } catch {
-            Write-Host "Failed to load hashtable cache from $Path: $_" -ForegroundColor Red
+            $err = $_
+            Write-Host "Failed to load hashtable cache from $Path: $err" -ForegroundColor Red
             return @{}
         }
     } else {
@@ -44,7 +45,8 @@ function Load-ArrayCache {
             Write-Host "Loaded array cache from $Path" -ForegroundColor DarkGray
             return @($arr)
         } catch {
-            Write-Host "Failed to load array cache from $Path: $_" -ForegroundColor Red
+            $err = $_
+            Write-Host "Failed to load array cache from $Path: $err" -ForegroundColor Red
             return @()
         }
     } else {
@@ -1163,7 +1165,8 @@ function Save-HashtableCache {
         $ordered | ConvertTo-Json -Depth 10 | Out-File -FilePath $Path -Encoding UTF8
         Write-Host "Saved hashtable cache to $Path" -ForegroundColor DarkGray
     } catch {
-        Write-Host "Failed to save hashtable cache to $Path: $_" -ForegroundColor Red
+        $err = $_
+        Write-Host "Failed to save hashtable cache to $Path: $err" -ForegroundColor Red
     }
 }
 function Save-ArrayCache {
@@ -1172,7 +1175,8 @@ function Save-ArrayCache {
         $Array | ConvertTo-Json | Out-File -FilePath $Path -Encoding UTF8
         Write-Host "Saved array cache to $Path" -ForegroundColor DarkGray
     } catch {
-        Write-Host "Failed to save array cache to $Path: $_" -ForegroundColor Red
+        $err = $_
+        Write-Host "Failed to save array cache to $Path: $err" -ForegroundColor Red
     }
 }
 Save-HashtableCache $global:ResolvedSIDs $ResolvedSIDsCacheFile
