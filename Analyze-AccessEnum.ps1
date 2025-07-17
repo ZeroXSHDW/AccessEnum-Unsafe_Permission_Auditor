@@ -1141,11 +1141,17 @@ Write-Host "`nAnalysis complete. Results saved to $OutputCsv" -ForegroundColor G
 
 # --- SAVE CACHES ---
 try {
-    $global:ResolvedSIDs | ConvertTo-Json -Depth 10 | Set-Content -Path $ResolvedSIDsCacheFile -Encoding UTF8
-} catch {}
+    # Convert hashtable to ordered dictionary for JSON serialization
+    $resolvedSIDsJson = [System.Collections.Specialized.OrderedDictionary]::new()
+    foreach ($key in $global:ResolvedSIDs.Keys) { $resolvedSIDsJson[$key] = $global:ResolvedSIDs[$key] }
+    $resolvedSIDsJson | ConvertTo-Json -Depth 10 | Out-File -FilePath $ResolvedSIDsCacheFile -Encoding UTF8
+    Write-Host "Saved ResolvedSIDs cache to $ResolvedSIDsCacheFile" -ForegroundColor DarkGray
+} catch { Write-Host "Failed to save ResolvedSIDs cache: $_" -ForegroundColor Red }
 try {
-    $global:UnknownSIDs | ConvertTo-Json | Set-Content -Path $UnknownSIDsCacheFile -Encoding UTF8
-} catch {}
+    $global:UnknownSIDs | ConvertTo-Json | Out-File -FilePath $UnknownSIDsCacheFile -Encoding UTF8
+    Write-Host "Saved UnknownSIDs cache to $UnknownSIDsCacheFile" -ForegroundColor DarkGray
+} catch { Write-Host "Failed to save UnknownSIDs cache: $_" -ForegroundColor Red }
 try {
-    $global:MalformedPrincipals | ConvertTo-Json | Set-Content -Path $MalformedPrincipalsCacheFile -Encoding UTF8
-} catch {}
+    $global:MalformedPrincipals | ConvertTo-Json | Out-File -FilePath $MalformedPrincipalsCacheFile -Encoding UTF8
+    Write-Host "Saved MalformedPrincipals cache to $MalformedPrincipalsCacheFile" -ForegroundColor DarkGray
+} catch { Write-Host "Failed to save MalformedPrincipals cache: $_" -ForegroundColor Red }
