@@ -6,6 +6,40 @@ param(
     [int]$BatchSize = 1000
 )
 
+# --- CACHE FILE PATHS ---
+$ResolvedSIDsCacheFile = "ResolvedSIDs.json"
+$UnknownSIDsCacheFile = "UnknownSIDs.json"
+$MalformedPrincipalsCacheFile = "MalformedPrincipals.json"
+
+# --- LOAD CACHES IF PRESENT ---
+if (Test-Path $ResolvedSIDsCacheFile) {
+    try {
+        $global:ResolvedSIDs = Get-Content $ResolvedSIDsCacheFile | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        $global:ResolvedSIDs = @{}
+    }
+} else {
+    $global:ResolvedSIDs = @{}
+}
+if (Test-Path $UnknownSIDsCacheFile) {
+    try {
+        $global:UnknownSIDs = Get-Content $UnknownSIDsCacheFile | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        $global:UnknownSIDs = @()
+    }
+} else {
+    $global:UnknownSIDs = @()
+}
+if (Test-Path $MalformedPrincipalsCacheFile) {
+    try {
+        $global:MalformedPrincipals = Get-Content $MalformedPrincipalsCacheFile | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        $global:MalformedPrincipals = @()
+    }
+} else {
+    $global:MalformedPrincipals = @()
+}
+
 # Check if input file exists
 if (!(Test-Path $InputPath)) {
     Write-Host "ERROR: Input file '$InputPath' does not exist. Please check the path and try again." -ForegroundColor Red
@@ -1104,3 +1138,14 @@ foreach ($result in $Results) {
 Set-Content -Path $OutputCsv -Value $csvLines -Encoding UTF8
 
 Write-Host "`nAnalysis complete. Results saved to $OutputCsv" -ForegroundColor Green
+
+# --- SAVE CACHES ---
+try {
+    $global:ResolvedSIDs | ConvertTo-Json -Depth 10 | Set-Content -Path $ResolvedSIDsCacheFile -Encoding UTF8
+} catch {}
+try {
+    $global:UnknownSIDs | ConvertTo-Json | Set-Content -Path $UnknownSIDsCacheFile -Encoding UTF8
+} catch {}
+try {
+    $global:MalformedPrincipals | ConvertTo-Json | Set-Content -Path $MalformedPrincipalsCacheFile -Encoding UTF8
+} catch {}
