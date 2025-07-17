@@ -1,44 +1,60 @@
 param(
     [Parameter(Mandatory)]
     [string]$InputPath,
-    [string]$OutputCsv = "AccessEnum_Analysis.csv",
+    [string]$OutputCsv,
     [string]$ProgressFile = "AccessEnum_Progress.json",
     [int]$BatchSize = 1000
 )
 
-# --- CACHE FILE PATHS ---
-$ResolvedSIDsCacheFile = "ResolvedSIDs.json"
-$UnknownSIDsCacheFile = "UnknownSIDs.json"
-$MalformedPrincipalsCacheFile = "MalformedPrincipals.json"
+# --- DYNAMIC OUTPUT AND CACHE FILE NAMES BASED ON INPUT ---
+$resolvedInputPath = (Resolve-Path $InputPath).ToString()
+$inputBase = [System.IO.Path]::GetFileNameWithoutExtension($resolvedInputPath)
+$inputBase = "$inputBase"  # ensure string
+$inputDir = [System.IO.Path]::GetDirectoryName($resolvedInputPath)
+$inputDir = "$inputDir"  # ensure string
+if (-not $OutputCsv -or $OutputCsv -eq "") {
+    $OutputCsv = Join-Path $inputDir ("$inputBase.csv")
+}
+$ResolvedSIDsCacheFile = Join-Path $inputDir ("${inputBase}_ResolvedSIDs.json")
+$UnknownSIDsCacheFile = Join-Path $inputDir ("${inputBase}_UnknownSIDs.json")
+$MalformedPrincipalsCacheFile = Join-Path $inputDir ("${inputBase}_MalformedPrincipals.json")
 
-# --- LOAD CACHES IF PRESENT ---
-if (Test-Path $ResolvedSIDsCacheFile) {
-    try {
-        $global:ResolvedSIDs = Get-Content $ResolvedSIDsCacheFile | ConvertFrom-Json -ErrorAction Stop
-    } catch {
-        $global:ResolvedSIDs = @{}
+# --- LOAD CACHES IF PRESENT (robust for hashtable/array) ---
+function Load-HashtableCache {
+    param($Path)
+    if (Test-Path $Path) {
+        try {
+            $raw = Get-Content $Path -Raw | ConvertFrom-Json -ErrorAction Stop
+            $ht = @{}
+            foreach ($k in $raw.PSObject.Properties.Name) { $ht[$k] = $raw.$k }
+            Write-Host "Loaded hashtable cache from $Path" -ForegroundColor DarkGray
+            return $ht
+        } catch {
+            Write-Host "Failed to load hashtable cache from $Path: $_" -ForegroundColor Red
+            return @{}
+        }
+    } else {
+        return @{}
     }
-} else {
-    $global:ResolvedSIDs = @{}
 }
-if (Test-Path $UnknownSIDsCacheFile) {
-    try {
-        $global:UnknownSIDs = Get-Content $UnknownSIDsCacheFile | ConvertFrom-Json -ErrorAction Stop
-    } catch {
-        $global:UnknownSIDs = @()
+function Load-ArrayCache {
+    param($Path)
+    if (Test-Path $Path) {
+        try {
+            $arr = Get-Content $Path -Raw | ConvertFrom-Json -ErrorAction Stop
+            Write-Host "Loaded array cache from $Path" -ForegroundColor DarkGray
+            return @($arr)
+        } catch {
+            Write-Host "Failed to load array cache from $Path: $_" -ForegroundColor Red
+            return @()
+        }
+    } else {
+        return @()
     }
-} else {
-    $global:UnknownSIDs = @()
 }
-if (Test-Path $MalformedPrincipalsCacheFile) {
-    try {
-        $global:MalformedPrincipals = Get-Content $MalformedPrincipalsCacheFile | ConvertFrom-Json -ErrorAction Stop
-    } catch {
-        $global:MalformedPrincipals = @()
-    }
-} else {
-    $global:MalformedPrincipals = @()
-}
+$global:ResolvedSIDs = Load-HashtableCache $ResolvedSIDsCacheFile
+$global:UnknownSIDs = Load-ArrayCache $UnknownSIDsCacheFile
+$global:MalformedPrincipals = Load-ArrayCache $MalformedPrincipalsCacheFile
 
 # Check if input file exists
 if (!(Test-Path $InputPath)) {
@@ -1139,19 +1155,27 @@ Set-Content -Path $OutputCsv -Value $csvLines -Encoding UTF8
 
 Write-Host "`nAnalysis complete. Results saved to $OutputCsv" -ForegroundColor Green
 
-# --- SAVE CACHES ---
-try {
-    # Convert hashtable to ordered dictionary for JSON serialization
-    $resolvedSIDsJson = [System.Collections.Specialized.OrderedDictionary]::new()
-    foreach ($key in $global:ResolvedSIDs.Keys) { $resolvedSIDsJson[$key] = $global:ResolvedSIDs[$key] }
-    $resolvedSIDsJson | ConvertTo-Json -Depth 10 | Out-File -FilePath $ResolvedSIDsCacheFile -Encoding UTF8
-    Write-Host "Saved ResolvedSIDs cache to $ResolvedSIDsCacheFile" -ForegroundColor DarkGray
-} catch { Write-Host "Failed to save ResolvedSIDs cache: $_" -ForegroundColor Red }
-try {
-    $global:UnknownSIDs | ConvertTo-Json | Out-File -FilePath $UnknownSIDsCacheFile -Encoding UTF8
-    Write-Host "Saved UnknownSIDs cache to $UnknownSIDsCacheFile" -ForegroundColor DarkGray
-} catch { Write-Host "Failed to save UnknownSIDs cache: $_" -ForegroundColor Red }
-try {
-    $global:MalformedPrincipals | ConvertTo-Json | Out-File -FilePath $MalformedPrincipalsCacheFile -Encoding UTF8
-    Write-Host "Saved MalformedPrincipals cache to $MalformedPrincipalsCacheFile" -ForegroundColor DarkGray
-} catch { Write-Host "Failed to save MalformedPrincipals cache: $_" -ForegroundColor Red }
+# --- SAVE CACHES (robust for hashtable/array) ---
+function Save-HashtableCache {
+    param($Hashtable, $Path)
+    try {
+        $ordered = [System.Collections.Specialized.OrderedDictionary]::new()
+        foreach ($key in $Hashtable.Keys) { $ordered[$key] = $Hashtable[$key] }
+        $ordered | ConvertTo-Json -Depth 10 | Out-File -FilePath $Path -Encoding UTF8
+        Write-Host "Saved hashtable cache to $Path" -ForegroundColor DarkGray
+    } catch {
+        Write-Host "Failed to save hashtable cache to $Path: $_" -ForegroundColor Red
+    }
+}
+function Save-ArrayCache {
+    param($Array, $Path)
+    try {
+        $Array | ConvertTo-Json | Out-File -FilePath $Path -Encoding UTF8
+        Write-Host "Saved array cache to $Path" -ForegroundColor DarkGray
+    } catch {
+        Write-Host "Failed to save array cache to $Path: $_" -ForegroundColor Red
+    }
+}
+Save-HashtableCache $global:ResolvedSIDs $ResolvedSIDsCacheFile
+Save-ArrayCache $global:UnknownSIDs $UnknownSIDsCacheFile
+Save-ArrayCache $global:MalformedPrincipals $MalformedPrincipalsCacheFile
