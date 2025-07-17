@@ -695,15 +695,353 @@ $csvLines = @($csvHeader)
 # Detect PowerShell version
 $pwshVersion = $PSVersionTable.PSVersion.Major
 if ($pwshVersion -ge 7) {
-    # Use ForEach-Object -Parallel for main processing
+    # All required variables for parallel block
+    $CriticalSystemPathsCopy = $CriticalSystemPaths
+    $IgnorePathsCopy = $IgnorePaths
+    $CustomPolicyCopy = $CustomPolicy
+    $WellKnownSIDsCopy = $WellKnownSIDs
+    $PrivilegedSIDsCopy = $PrivilegedSIDs
+    $PrivilegedNamesCopy = $PrivilegedNames
+
     $Results = $lines | ForEach-Object -Parallel {
         param($line, $CriticalSystemPaths, $IgnorePaths, $CustomPolicy, $WellKnownSIDs, $PrivilegedSIDs, $PrivilegedNames)
-        # Copy all necessary functions and variables here (or use Import-Module if modularized)
-        # ... main processing code for each $line ...
-        # Return the result object
-    } -ArgumentList $CriticalSystemPaths, $IgnorePaths, $CustomPolicy, $WellKnownSIDs, $PrivilegedSIDs, $PrivilegedNames -ThrottleLimit 4
+        # All helper functions must be defined here
+        function Try-GetFullPath {
+            param($Path)
+            if (-not $Path -or $Path.Trim() -eq "") { return $null }
+            try { return [System.IO.Path]::GetFullPath($Path) } catch { return $null }
+        }
+        function Is-CriticalSystemPath {
+            param($Path)
+            $normalizedPath = Try-GetFullPath $Path
+            if (-not $normalizedPath) { return $false }
+            foreach ($critical in $CriticalSystemPaths) {
+                if (-not $critical) { continue }
+                $critNorm = Try-GetFullPath $critical
+                if (-not $critNorm) { continue }
+                if ($normalizedPath -like "$critNorm*") { return $true }
+            }
+            return $false
+        }
+        function Is-IgnoredPath {
+            param($Path)
+            $normalizedPath = Try-GetFullPath $Path
+            if (-not $normalizedPath) { return $false }
+            foreach ($ignore in $IgnorePaths) {
+                if (-not $ignore) { continue }
+                $ignNorm = Try-GetFullPath $ignore
+                if (-not $ignNorm) { continue }
+                if ($normalizedPath -like "$ignNorm*") { return $true }
+            }
+            return $false
+        }
+        function Is-InsecurePrincipal {
+            param($Principal)
+            $Principal = ($Principal -as [string]).ToLower()
+            return ($Principal -match 'guest|anonymous|null sid|everyone|users|authenticated users|interactive|network|creator owner')
+        }
+        function Is-PolicyCompliant {
+            param($Path, $Principal, $AccessType)
+            foreach ($rule in $CustomPolicy) {
+                if ($Path -like $rule.PathPattern -and $Principal -like "*$($rule.Principal)*" -and $AccessType -eq $rule.AccessType) {
+                    return @{ Allowed = $rule.Allowed; Severity = $rule.Severity; Notes = $rule.Notes }
+                }
+            }
+            return $null
+        }
+        function Is-PrivilegedPrincipal {
+            param($Principal, $PrincipalSID)
+            $p = $Principal.ToLower()
+            if ($PrivilegedNames | Where-Object { $p -like "*$_*" }) { return $true }
+            if ($PrivilegedSIDs | Where-Object { $_ -eq $PrincipalSID }) { return $true }
+            return $false
+        }
+        function Convert-SIDToName {
+            param($Principal)
+            if (-not $Principal) { return $Principal }
+            $Principal = $Principal.Trim()
+            $results = @()
+            $PrincipalNormalizationMap = @{
+                "nt authority\\authenticated users" = "Authenticated Users"
+                "world (everyone)" = "Everyone"
+                "nt authority\\restricted" = "Restricted"
+                "guest (domain/local)" = "Guest"
+                "nt authority\\interactive" = "Interactive"
+                "win-emu0lp3fcrp\\tomcat" = "Tomcat Service Account"
+                "application package authority\\software and hardware certificates or a smart card" = "Software/Hardware Certs or Smart Card"
+                "nt authority\\batch" = "Batch"
+                "nt authority\\anonymous logon" = "Anonymous Logon"
+                "custom group 1 (unknown, please verify)" = "Custom Group 1 (Unknown, please verify)"
+                "custom group 2 (unknown, please verify)" = "Custom Group 2 (Unknown, please verify)"
+            }
+            foreach ($item in $Principal -split ',') {
+                $sid = $item.Trim()
+                if (-not $sid) { continue }
+                $sidClean = $sid -replace '\s*\(.*\)$',''
+                $sidLower = $sidClean.ToLower()
+                $found = $false
+                if ($PrincipalNormalizationMap.ContainsKey($sidLower)) {
+                    $results += $PrincipalNormalizationMap[$sidLower]
+                    $found = $true
+                    continue
+                }
+                $sidNoDomain = $sidLower -replace '^[^\\]+\\',''
+                if ($PrincipalNormalizationMap.ContainsKey($sidNoDomain)) {
+                    $results += $PrincipalNormalizationMap[$sidNoDomain]
+                    $found = $true
+                    continue
+                }
+                foreach ($key in $WellKnownSIDs.Keys) {
+                    if ($sidLower -eq $key.ToLower()) {
+                        $results += $WellKnownSIDs[$key]
+                        $found = $true
+                        break
+                    }
+                }
+                if ($found) { continue }
+                foreach ($val in $WellKnownSIDs.Values) {
+                    if ($sidLower -eq $val.ToLower()) {
+                        $results += $val
+                        $found = $true
+                        break
+                    }
+                }
+                if ($found) { continue }
+                if ($sidLower -match '^(nt authority\\)?[a-z\s]+$' -or $sidLower -match '^application package authority\\[a-z\s]+$' -or $sidLower -match '^[a-z0-9\-]+\\[a-z0-9\-]+$') {
+                    $results += "Malformed Principal: $sid"
+                    continue
+                }
+                if ($sid -notmatch '^S-1-[\d-]+$' -or $sid -eq 'S-1-') {
+                    $results += "$sid (Invalid SID format)"
+                    continue
+                }
+                $sidKey = $sid.ToUpper()
+                $found = $false
+                foreach ($knownSID in $WellKnownSIDs.Keys) {
+                    if ($sidKey -eq $knownSID.ToUpper()) {
+                        $results += $WellKnownSIDs[$knownSID]
+                        $found = $true
+                        break
+                    }
+                }
+                if ($found) { continue }
+                switch -Regex ($sid) {
+                    '^S-1-5-21-[\d-]+-500$' { $results += 'Administrator (Domain/Local)'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-501$' { $results += 'Guest (Domain/Local)'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-512$' { $results += 'Domain Admins'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-513$' { $results += 'Domain Users'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-514$' { $results += 'Domain Guests'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-515$' { $results += 'Domain Computers'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-516$' { $results += 'Domain Controllers'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-517$' { $results += 'Cert Publishers'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-518$' { $results += 'Schema Admins'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-519$' { $results += 'Enterprise Admins'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-520$' { $results += 'Group Policy Creator Owners'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-521$' { $results += 'Read-only Domain Controllers'; $found = $true; break }
+                    '^S-1-5-21-[\d-]+-\d+$' { $results += 'Domain Account/Group'; $found = $true; break }
+                    '^S-1-5-32-(\d+)$' {
+                        $rid = $Matches[1]
+                        if ($WellKnownSIDs.ContainsKey("S-1-5-32-$rid")) {
+                            $results += $WellKnownSIDs["S-1-5-32-$rid"]
+                        } else {
+                            $results += "Builtin Group (RID: $rid)"
+                        }
+                        $found = $true; break
+                    }
+                    '^S-1-5-80(-\d+)*$' { $results += 'NT Service Account or All Services'; $found = $true; break }
+                    '^S-1-15-2(-\d+)+$' { $results += 'Application Package SID'; $found = $true; break }
+                    '^S-1-15-3(-\d+)+$' { $results += 'Capability SID'; $found = $true; break }
+                }
+                if ($found) { continue }
+                $results += "$sid (Unknown SID)"
+            }
+            return ($results -join ', ')
+        }
+        function Analyze-Entry {
+            param(
+                $Path, $AccessType, $Principal, $DenyValue, $OriginalPath
+            )
+            $Reasons = @()
+            $Status = "Compliant"
+            $Severity = "Low"
+            $ComplianceStatusDetail = "No issues detected"
+            $principalName = Convert-SIDToName $Principal
+            $principalSID = $Principal
+            $principalLower = $principalName.ToLower()
+            $accessLower = $AccessType.ToLower()
+            $normalizedPath = Try-GetFullPath $Path
+            $isCritical = Is-CriticalSystemPath $normalizedPath
+            $isIgnored = Is-IgnoredPath $normalizedPath
+            $policyResult = Is-PolicyCompliant $normalizedPath $principalName $AccessType
+            if ($policyResult) {
+                if ($policyResult.Allowed) {
+                    $Status = "Compliant"
+                    $Severity = $policyResult.Severity
+                    $ComplianceStatusDetail = "Policy Exception: $($policyResult.Notes)"
+                    $Reasons += "Allowed by custom policy."
+                } else {
+                    $Status = "Non-Secure"
+                    $Severity = $policyResult.Severity
+                    $ComplianceStatusDetail = "Denied by custom policy: $($policyResult.Notes)"
+                    $Reasons += "Denied by custom policy."
+                }
+                return [PSCustomObject]@{
+                    Path = $OriginalPath
+                    AccessType = $AccessType
+                    Principal = $principalName
+                    Deny = $DenyValue
+                    Status = $Status
+                    Severity = $Severity
+                    ComplianceStatusDetail = $ComplianceStatusDetail
+                    Reason = $Reasons -join '; '
+                }
+            }
+            if ($accessLower -eq 'deny') {
+                $Status = "Compliant"
+                $Severity = "Low"
+                $ComplianceStatusDetail = "Access Denied"
+                $Reasons += "Access is denied to this principal, so no risk."
+                return [PSCustomObject]@{
+                    Path = $OriginalPath
+                    AccessType = $AccessType
+                    Principal = $principalName
+                    Deny = $DenyValue
+                    Status = $Status
+                    Severity = $Severity
+                    ComplianceStatusDetail = $ComplianceStatusDetail
+                    Reason = $Reasons -join '; '
+                }
+            }
+            $isPrivileged = Is-PrivilegedPrincipal $principalName $principalSID
+            $isGuestOrAnon = Is-InsecurePrincipal $principalName
+            $isUnknownSID = ($Principal -match '^S-1-' -and $principalName -match 'Unknown SID')
+            $isCapabilitySID = ($principalName -match 'application package sid|capability sid|application package authority\\')
+            $isMalformed = ($principalName -like 'Malformed Principal*')
+            if ($isMalformed) {
+                $Status = "Needs Review"
+                $Severity = "Medium"
+                $ComplianceStatusDetail = "Malformed Principal"
+                $Reasons += "Principal could not be mapped to a known SID or name."
+                return [PSCustomObject]@{
+                    Path = $OriginalPath
+                    AccessType = $AccessType
+                    Principal = $principalName
+                    Deny = $DenyValue
+                    Status = $Status
+                    Severity = $Severity
+                    ComplianceStatusDetail = $ComplianceStatusDetail
+                    Reason = $Reasons -join '; '
+                }
+            }
+            if ($isIgnored) {
+                $Status = "Compliant (Ignored Path)"
+                $Severity = "Low"
+                $ComplianceStatusDetail = "Ignored Path"
+                $Reasons += "Path is in ignore list. Skipping strict checks."
+                return [PSCustomObject]@{
+                    Path = $OriginalPath
+                    AccessType = $AccessType
+                    Principal = $principalName
+                    Deny = $DenyValue
+                    Status = $Status
+                    Severity = $Severity
+                    ComplianceStatusDetail = $ComplianceStatusDetail
+                    Reason = $Reasons -join '; '
+                }
+            }
+            if ($isGuestOrAnon -or $isUnknownSID) {
+                $Status = "Non-Secure"
+                $Severity = "High"
+                $ComplianceStatusDetail = if ($isGuestOrAnon) { "Guest/Anonymous Access" } else { "Unknown SID" }
+                $Reasons += "Guest/Anonymous/Unknown SID/Non-unique principal with any access is insecure."
+            }
+            elseif ($isCapabilitySID -and $accessLower -eq 'write' -and $isCritical) {
+                $Status = "Needs Review"
+                $Severity = "Medium"
+                $ComplianceStatusDetail = "Capability SID Write Access to Critical Path"
+                $Reasons += "Capability SID has Write access to critical system path."
+            }
+            elseif ($isCapabilitySID) {
+                $Status = "Compliant"
+                $Severity = "Low"
+                $ComplianceStatusDetail = "Capability SID Detected"
+                $Reasons += "Capability SID detected; typically low-risk unless Write on critical paths."
+            }
+            elseif ($isPrivileged) {
+                if ($accessLower -eq 'deny') {
+                    $Status = "Needs Review"
+                    $Severity = "Medium"
+                    $ComplianceStatusDetail = "Privileged Deny Rule"
+                    $Reasons += "Deny rule for privileged principal may break system functionality."
+                } else {
+                    $Status = "Compliant"
+                    $Severity = "Low"
+                    $ComplianceStatusDetail = "Privileged Access"
+                    $Reasons += "Privileged principal with standard access."
+                }
+            }
+            elseif ($principalLower -match 'world|everyone' -and $accessLower -match 'write|deny') {
+                $Status = "Non-Secure"
+                $Severity = "High"
+                $ComplianceStatusDetail = "Everyone/World Access"
+                $Reasons += "'Everyone' or 'World' has $AccessType access. This is highly insecure."
+            }
+            elseif (-not $isPrivileged -and $accessLower -match 'write|deny') {
+                if ($isCritical) {
+                    $Status = "Non-Secure"
+                    $Severity = "High"
+                    $ComplianceStatusDetail = "Non-Privileged Write/Deny on Critical Path"
+                    $Reasons += "Non-privileged principal has Write/Deny access to critical system path."
+                } else {
+                    $Status = "Needs Review"
+                    $Severity = "Medium"
+                    $ComplianceStatusDetail = "Non-Privileged Write/Deny on Non-Critical Path"
+                    $Reasons += "Non-privileged principal has Write/Deny access to non-critical path."
+                }
+            }
+            else {
+                $Status = "Compliant"
+                $Severity = "Low"
+                $ComplianceStatusDetail = "No issues detected"
+                $Reasons += "No issues detected."
+            }
+            return [PSCustomObject]@{
+                Path = $OriginalPath
+                AccessType = $AccessType
+                Principal = $principalName
+                Deny = $DenyValue
+                Status = $Status
+                Severity = $Severity
+                ComplianceStatusDetail = $ComplianceStatusDetail
+                Reason = $Reasons -join '; '
+            }
+        }
+        # Main parallel processing logic
+        if ($line.Trim() -eq "") { return $null }
+        $fields = $line -split "\t"
+        $Path = $fields[0] -replace '"',''
+        $Read = $fields[1] -replace '"',''
+        $Write = $fields[2] -replace '"',''
+        $Deny = $fields[3] -replace '"',''
+        $newResults = @()
+        foreach ($perm in @(@{"Type"="Read";"Value"=$Read},@{"Type"="Write";"Value"=$Write},@{"Type"="Deny";"Value"=$Deny})) {
+            $AccessType = $perm.Type
+            $Value = $perm.Value
+            if ($Value -and $Value -ne "" -and $Value -ne "Access Denied") {
+                $principals = $Value -split ","
+                foreach ($principal in $principals) {
+                    $principal = $principal.Trim()
+                    if ($principal -eq "") { continue }
+                    $analysis = Analyze-Entry -Path $Path -AccessType $AccessType -Principal $principal -DenyValue $Deny -OriginalPath $Path
+                    $newResults += $analysis
+                }
+            }
+        }
+        return $newResults
+    } -ArgumentList $CriticalSystemPathsCopy, $IgnorePathsCopy, $CustomPolicyCopy, $WellKnownSIDsCopy, $PrivilegedSIDsCopy, $PrivilegedNamesCopy -ThrottleLimit 4
+    # Flatten results (since each parallel task returns an array)
+    $Results = $Results | Where-Object { $_ } | ForEach-Object { $_ }
 } else {
-    # Fallback to serial processing (current logic)
     foreach ($line in $lines) {
         $lineNum++
         if ($lineNum % 1000 -eq 0) {
@@ -715,9 +1053,7 @@ if ($pwshVersion -ge 7) {
         $Read = $fields[1] -replace '"',''
         $Write = $fields[2] -replace '"',''
         $Deny = $fields[3] -replace '"',''
-
         $newResults = @()
-        # Process each permission type
         foreach ($perm in @(@{"Type"="Read";"Value"=$Read},@{"Type"="Write";"Value"=$Write},@{"Type"="Deny";"Value"=$Deny})) {
             $AccessType = $perm.Type
             $Value = $perm.Value
@@ -729,56 +1065,16 @@ if ($pwshVersion -ge 7) {
                     $analysis = Analyze-Entry -Path $Path -AccessType $AccessType -Principal $principal -DenyValue $Deny -OriginalPath $Path
                     $Results += $analysis
                     $newResults += $analysis
-                    if ($analysis.Status -eq "Non-Secure") {
-                        $InsecureEntries += $analysis
-                    }
                 }
             }
         }
-        # Append results to CSV
-        if ($newResults.Count -gt 0) {
-            $newResults | ForEach-Object {
-                $principalFriendly = Convert-SIDToName $_.Principal
-                $csvLine = '"' + $_.Path.Replace('"','""') + '","' + $_.AccessType + '","' + $principalFriendly.Replace('"','""') + '","' + $_.Deny.Replace('"','""') + '","' + $_.Status + '","' + $_.Severity + '","' + $_.ComplianceStatusDetail.Replace('"','""') + '","' + $_.Reason.Replace('"','""') + '"'
-                $csvLines += $csvLine
-            }
-        }
     }
 }
-
-Write-Host "Processing complete. Writing results..." -ForegroundColor Cyan
-
-# Output insecure entries
-if ($InsecureEntries.Count -eq 0) {
-    Write-Host "No insecure permissions found." -ForegroundColor Green
-} else {
-    Write-Host "`nInsecure Permissions Detected:`n" -ForegroundColor Red
-    foreach ($entry in $InsecureEntries) {
-        Write-Host "Path: $($entry.Path)" -ForegroundColor Yellow
-        Write-Host "AccessType: $($entry.AccessType)"
-        Write-Host "Principal: $(Convert-SIDToName $entry.Principal)"
-        if ($entry.Deny) { Write-Host "Deny: $($entry.Deny)" }
-        Write-Host "Status: $($entry.Status)" -ForegroundColor Cyan
-        Write-Host "Severity: $($entry.Severity)" -ForegroundColor Cyan
-        Write-Host "ComplianceStatusDetail: $($entry.ComplianceStatusDetail)" -ForegroundColor Cyan
-        Write-Host "Reason: $($entry.Reason)" -ForegroundColor Cyan
-        Write-Host ("-"*40)
-    }
+foreach ($result in $Results) {
+    $principalFriendly = Convert-SIDToName $result.Principal
+    $csvLine = '"' + $result.Path.Replace('"','""') + '","' + $result.AccessType + '","' + $principalFriendly.Replace('"','""') + '","' + $result.Deny.Replace('"','""') + '","' + $result.Status + '","' + $result.Severity + '","' + $result.ComplianceStatusDetail.Replace('"','""') + '","' + $result.Reason.Replace('"','""') + '"'
+    $csvLines += $csvLine
 }
-
-# Output unknown SIDs for review
-if ($global:UnknownSIDs.Count -gt 0) {
-    Write-Host "`nUnknown SIDs for review (add to `$WellKnownSIDs` if needed):" -ForegroundColor Yellow
-    $global:UnknownSIDs | ForEach-Object { Write-Host $_ }
-}
-
-# Output malformed principals for review
-if ($global:MalformedPrincipals.Count -gt 0) {
-    Write-Host "`nMalformed Principals (non-SID inputs detected in input file):" -ForegroundColor Yellow
-    $global:MalformedPrincipals | ForEach-Object { Write-Host $_ }
-}
-
-# Write all accumulated CSV lines to the file
 Set-Content -Path $OutputCsv -Value $csvLines -Encoding UTF8
 
 Write-Host "`nAnalysis complete. Results saved to $OutputCsv" -ForegroundColor Green
