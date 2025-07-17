@@ -18,8 +18,9 @@ $IgnorePaths = @(
     "C:\Users\Public"
 )
 
-# --- BEGIN SID TO NAME MAPPING AND CONVERSION PLATFORM ---
-# This hashtable maps well-known SIDs to their friendly names. Expand as needed for your environment.
+# --- BEGIN ADVANCED SID TO NAME MAPPING AND CONVERSION PLATFORM ---
+
+# Hashtable for well-known SIDs (expand as needed)
 $WellKnownSIDs = @{
     # Universal well-known SIDs
     "S-1-0-0" = "Null SID"
@@ -86,92 +87,107 @@ $WellKnownSIDs = @{
     # Add more SIDs as needed for your environment
 }
 
-<#[
-    SID Conversion Platform Instructions:
-    - The $WellKnownSIDs hashtable maps SIDs to friendly names. Expand this table as needed.
-    - To add a new SID, add a new entry: "SID string" = "Friendly Name"
-    - For domain or custom SIDs, consider implementing pattern matching in Convert-SIDToName (see below).
-    - For advanced detection, you can add regex-based rules for SID patterns (e.g., S-1-5-21-... for domain users).
-    - This platform is extensible: you can add lookups from AD, external files, or web APIs if needed.
-#]>
+# List to collect unknown SIDs for future mapping
+$global:UnknownSIDs = @()
 
+<#
+.SYNOPSIS
+    Converts a SID or a comma-separated list of SIDs to friendly names.
+.DESCRIPTION
+    - Uses $WellKnownSIDs for direct matches (case-insensitive).
+    - Pattern matches for domain/local SIDs.
+    - Optionally attempts AD lookup for unknown SIDs (if running on Windows with AD access).
+    - Logs unknown SIDs for future mapping.
+.PARAMETER Principal
+    The SID string or comma-separated SIDs to convert.
+.EXAMPLE
+    Convert-SIDToName "S-1-5-32-544"
+    Convert-SIDToName "S-1-5-32-544, S-1-5-21-1234567890-500"
+.NOTES
+    To add new SIDs, update $WellKnownSIDs or extend the pattern matching section.
+#>
 function Convert-SIDToName {
-    <#
-    .SYNOPSIS
-        Converts a SID string to a friendly name if known, otherwise returns the original value.
-    .DESCRIPTION
-        Uses the $WellKnownSIDs hashtable for direct matches. For domain SIDs and other patterns, attempts to provide a best-effort description.
-        You can expand this function to query Active Directory or other sources for unknown SIDs.
-    .PARAMETER Principal
-        The SID or name to convert.
-    .EXAMPLE
-        Convert-SIDToName "S-1-5-32-544" # Returns "Administrators"
-    #>
     param($Principal)
     if (-not $Principal) { return $Principal }
     $Principal = $Principal.Trim()
-    # Direct match in table
-    if ($WellKnownSIDs.ContainsKey($Principal)) {
-        return $WellKnownSIDs[$Principal]
-    }
-    # Pattern match for domain/local accounts (e.g., S-1-5-21-domain-500)
-    if ($Principal -match '^S-1-5-21-([\d-]+)-500$') {
-        return "Administrator (Domain/Local)"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-501$') {
-        return "Guest (Domain/Local)"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-512$') {
-        return "Domain Admins"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-513$') {
-        return "Domain Users"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-514$') {
-        return "Domain Guests"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-515$') {
-        return "Domain Computers"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-516$') {
-        return "Domain Controllers"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-517$') {
-        return "Cert Publishers"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-518$') {
-        return "Schema Admins"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-519$') {
-        return "Enterprise Admins"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-520$') {
-        return "Group Policy Creator Owners"
-    }
-    if ($Principal -match '^S-1-5-21-([\d-]+)-521$') {
-        return "Read-only Domain Controllers"
-    }
-    # Builtin aliases (RID 544-580)
-    if ($Principal -match '^S-1-5-32-(\d+)$') {
-        $rid = $Matches[1]
-        if ($WellKnownSIDs.ContainsKey("S-1-5-32-$rid")) {
-            return $WellKnownSIDs["S-1-5-32-$rid"]
-        } else {
-            return "Builtin Group (RID: $rid)"
+    $results = @()
+
+    foreach ($item in $Principal -split ',') {
+        $sid = $item.Trim()
+        $sidKey = $sid.ToUpper()
+
+        # Direct match (case-insensitive)
+        $found = $false
+        foreach ($knownSID in $WellKnownSIDs.Keys) {
+            if ($sidKey -eq $knownSID.ToUpper()) {
+                $results += $WellKnownSIDs[$knownSID]
+                $found = $true
+                break
+            }
+        }
+        if ($found) { continue }
+
+        # Pattern matches for domain/local SIDs
+        switch -Regex ($sid) {
+            '^S-1-5-21-[\d-]+-500$' { $results += 'Administrator (Domain/Local)'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-501$' { $results += 'Guest (Domain/Local)'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-512$' { $results += 'Domain Admins'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-513$' { $results += 'Domain Users'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-514$' { $results += 'Domain Guests'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-515$' { $results += 'Domain Computers'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-516$' { $results += 'Domain Controllers'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-517$' { $results += 'Cert Publishers'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-518$' { $results += 'Schema Admins'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-519$' { $results += 'Enterprise Admins'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-520$' { $results += 'Group Policy Creator Owners'; $found = $true; break }
+            '^S-1-5-21-[\d-]+-521$' { $results += 'Read-only Domain Controllers'; $found = $true; break }
+            '^S-1-5-32-(\d+)$' {
+                $rid = $Matches[1]
+                if ($WellKnownSIDs.ContainsKey("S-1-5-32-$rid")) {
+                    $results += $WellKnownSIDs["S-1-5-32-$rid"]
+                } else {
+                    $results += "Builtin Group (RID: $rid)"
+                }
+                $found = $true; break
+            }
+            '^S-1-5-80(-\d+)*$' { $results += 'NT Service Account or All Services'; $found = $true; break }
+        }
+        if ($found) { continue }
+
+        # Optionally, try to resolve via AD (if on Windows and have access)
+        try {
+            if ($sid -match '^S-1-\d+(-\d+)+$' -and (Get-Command Get-ADUser -ErrorAction SilentlyContinue)) {
+                $adObj = try { New-Object System.Security.Principal.SecurityIdentifier($sid) } catch { $null }
+                if ($adObj) {
+                    $ntAccount = $adObj.Translate([System.Security.Principal.NTAccount]) -as [string]
+                    if ($ntAccount) {
+                        $results += $ntAccount
+                        $found = $true
+                    }
+                }
+            }
+        } catch {}
+
+        # If still not found, log for future mapping and return as-is with note
+        if (-not $found) {
+            if ($sid -match '^S-1-\d+(-\d+)+$' -and ($global:UnknownSIDs -notcontains $sid)) {
+                $global:UnknownSIDs += $sid
+            }
+            $results += "$sid (Unknown SID)"
         }
     }
-    # Service SIDs
-    if ($Principal -match '^S-1-5-80(-\d+)*$') {
-        return "NT Service Account or All Services"
-    }
-    # If it looks like a SID but is unknown, return as-is with a note
-    if ($Principal -match '^S-1-\d+(-\d+)+$') {
-        return "$Principal (Unknown SID)"
-    }
-    # Otherwise, return the original principal (likely already a name)
-    return $Principal
+    return ($results -join ', ')
 }
-# --- END SID TO NAME MAPPING AND CONVERSION PLATFORM ---
+
+<#
+To expand the SID mapping:
+- Add new entries to $WellKnownSIDs.
+- Add new regex patterns to the switch block in Convert-SIDToName.
+- Review $global:UnknownSIDs after script runs to identify SIDs needing mapping.
+- For AD/domain SIDs, consider integrating with Get-ADUser/Get-ADGroup for live lookups.
+#>
+
+# --- END ADVANCED SID TO NAME MAPPING AND CONVERSION PLATFORM ---
 
 function Is-InsecurePrincipal {
     param($Principal)
