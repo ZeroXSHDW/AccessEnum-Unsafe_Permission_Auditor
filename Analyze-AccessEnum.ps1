@@ -65,7 +65,7 @@ if (!(Test-Path $InputPath)) {
 $CriticalSystemPaths = @(
     $env:windir,
     $env:ProgramFiles,
-    ${env:ProgramFiles(x86)}
+    [System.Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
 ) | Where-Object { $_ -and $_.Trim() -ne "" }
 $IgnorePaths = @(
     "C:\Users\Public"
