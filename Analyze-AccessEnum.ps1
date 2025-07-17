@@ -18,6 +18,161 @@ $IgnorePaths = @(
     "C:\Users\Public"
 )
 
+# --- BEGIN SID TO NAME MAPPING AND CONVERSION PLATFORM ---
+# This hashtable maps well-known SIDs to their friendly names. Expand as needed for your environment.
+$WellKnownSIDs = @{
+    # Universal well-known SIDs
+    "S-1-0-0" = "Null SID"
+    "S-1-1-0" = "World (Everyone)"
+    "S-1-2-0" = "Local"
+    "S-1-2-1" = "Console Logon"
+    "S-1-3-0" = "Creator Owner ID"
+    "S-1-3-1" = "Creator Group ID"
+    "S-1-3-2" = "Owner Server"
+    "S-1-3-3" = "Group Server"
+    "S-1-3-4" = "Owner Rights"
+    # NT Authority SIDs
+    "S-1-5" = "NT Authority"
+    "S-1-5-1" = "Dialup"
+    "S-1-5-2" = "Network"
+    "S-1-5-3" = "Batch"
+    "S-1-5-4" = "Interactive"
+    "S-1-5-5" = "Logon Session"
+    "S-1-5-6" = "Service"
+    "S-1-5-7" = "Anonymous Logon"
+    "S-1-5-8" = "Proxy"
+    "S-1-5-9" = "Enterprise Domain Controllers"
+    "S-1-5-10" = "Self"
+    "S-1-5-11" = "Authenticated Users"
+    "S-1-5-12" = "Restricted Code"
+    "S-1-5-13" = "Terminal Server User"
+    "S-1-5-14" = "Remote Interactive Logon"
+    "S-1-5-15" = "This Organization"
+    "S-1-5-17" = "IUSR"
+    "S-1-5-18" = "System (LocalSystem)"
+    "S-1-5-19" = "NT Authority (LocalService)"
+    "S-1-5-20" = "NetworkService"
+    # Built-in groups
+    "S-1-5-32-544" = "Administrators"
+    "S-1-5-32-545" = "Users"
+    "S-1-5-32-546" = "Guests"
+    "S-1-5-32-547" = "Power Users"
+    "S-1-5-32-548" = "Account Operators"
+    "S-1-5-32-549" = "Server Operators"
+    "S-1-5-32-550" = "Print Operators"
+    "S-1-5-32-551" = "Backup Operators"
+    "S-1-5-32-552" = "Replicators"
+    "S-1-5-32-554" = "Pre-Windows 2000 Compatible Access"
+    "S-1-5-32-555" = "Remote Desktop Users"
+    "S-1-5-32-556" = "Network Configuration Operators"
+    "S-1-5-32-557" = "Incoming Forest Trust Builders"
+    "S-1-5-32-558" = "Performance Monitor Users"
+    "S-1-5-32-559" = "Performance Log Users"
+    "S-1-5-32-560" = "Windows Authorization Access Group"
+    "S-1-5-32-561" = "Terminal Server License Servers"
+    "S-1-5-32-562" = "Distributed COM Users"
+    "S-1-5-32-568" = "IIS_IUSRS"
+    "S-1-5-32-569" = "Cryptographic Operators"
+    "S-1-5-32-573" = "Event Log Readers"
+    "S-1-5-32-574" = "Certificate Service DCOM Access"
+    "S-1-5-32-575" = "RDS Remote Access Servers"
+    "S-1-5-32-576" = "RDS Endpoint Servers"
+    "S-1-5-32-577" = "RDS Management Servers"
+    "S-1-5-32-578" = "Hyper-V Administrators"
+    "S-1-5-32-579" = "Access Control Assistance Operators"
+    "S-1-5-32-580" = "Remote Management Users"
+    # Service SIDs
+    "S-1-5-80-0" = "All Services"
+    # Add more SIDs as needed for your environment
+}
+
+<#[
+    SID Conversion Platform Instructions:
+    - The $WellKnownSIDs hashtable maps SIDs to friendly names. Expand this table as needed.
+    - To add a new SID, add a new entry: "SID string" = "Friendly Name"
+    - For domain or custom SIDs, consider implementing pattern matching in Convert-SIDToName (see below).
+    - For advanced detection, you can add regex-based rules for SID patterns (e.g., S-1-5-21-... for domain users).
+    - This platform is extensible: you can add lookups from AD, external files, or web APIs if needed.
+#]>
+
+function Convert-SIDToName {
+    <#
+    .SYNOPSIS
+        Converts a SID string to a friendly name if known, otherwise returns the original value.
+    .DESCRIPTION
+        Uses the $WellKnownSIDs hashtable for direct matches. For domain SIDs and other patterns, attempts to provide a best-effort description.
+        You can expand this function to query Active Directory or other sources for unknown SIDs.
+    .PARAMETER Principal
+        The SID or name to convert.
+    .EXAMPLE
+        Convert-SIDToName "S-1-5-32-544" # Returns "Administrators"
+    #>
+    param($Principal)
+    if (-not $Principal) { return $Principal }
+    $Principal = $Principal.Trim()
+    # Direct match in table
+    if ($WellKnownSIDs.ContainsKey($Principal)) {
+        return $WellKnownSIDs[$Principal]
+    }
+    # Pattern match for domain/local accounts (e.g., S-1-5-21-domain-500)
+    if ($Principal -match '^S-1-5-21-([\d-]+)-500$') {
+        return "Administrator (Domain/Local)"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-501$') {
+        return "Guest (Domain/Local)"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-512$') {
+        return "Domain Admins"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-513$') {
+        return "Domain Users"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-514$') {
+        return "Domain Guests"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-515$') {
+        return "Domain Computers"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-516$') {
+        return "Domain Controllers"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-517$') {
+        return "Cert Publishers"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-518$') {
+        return "Schema Admins"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-519$') {
+        return "Enterprise Admins"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-520$') {
+        return "Group Policy Creator Owners"
+    }
+    if ($Principal -match '^S-1-5-21-([\d-]+)-521$') {
+        return "Read-only Domain Controllers"
+    }
+    # Builtin aliases (RID 544-580)
+    if ($Principal -match '^S-1-5-32-(\d+)$') {
+        $rid = $Matches[1]
+        if ($WellKnownSIDs.ContainsKey("S-1-5-32-$rid")) {
+            return $WellKnownSIDs["S-1-5-32-$rid"]
+        } else {
+            return "Builtin Group (RID: $rid)"
+        }
+    }
+    # Service SIDs
+    if ($Principal -match '^S-1-5-80(-\d+)*$') {
+        return "NT Service Account or All Services"
+    }
+    # If it looks like a SID but is unknown, return as-is with a note
+    if ($Principal -match '^S-1-\d+(-\d+)+$') {
+        return "$Principal (Unknown SID)"
+    }
+    # Otherwise, return the original principal (likely already a name)
+    return $Principal
+}
+# --- END SID TO NAME MAPPING AND CONVERSION PLATFORM ---
+
 function Is-InsecurePrincipal {
     param($Principal)
     $Principal = ($Principal -as [string])
@@ -192,7 +347,8 @@ foreach ($line in $lines) {
     # Append new results to CSV after each line
     if ($newResults.Count -gt 0) {
         $newResults | ForEach-Object {
-            $csvLine = '"' + $_.Path.Replace('"','""') + '","' + $_.AccessType + '","' + $_.Principal.Replace('"','""') + '","' + $_.Deny.Replace('"','""') + '","' + $_.Status + '","' + $_.Reason.Replace('"','""') + '"'
+            $principalFriendly = Convert-SIDToName $_.Principal
+            $csvLine = '"' + $_.Path.Replace('"','""') + '","' + $_.AccessType + '","' + $principalFriendly.Replace('"','""') + '","' + $_.Deny.Replace('"','""') + '","' + $_.Status + '","' + $_.Reason.Replace('"','""') + '"'
             Add-Content -Path $OutputCsv -Value $csvLine -Encoding UTF8
         }
     }
@@ -208,7 +364,7 @@ if ($InsecureEntries.Count -eq 0) {
     foreach ($entry in $InsecureEntries) {
         Write-Host "Path: $($entry.Path)" -ForegroundColor Yellow
         Write-Host "AccessType: $($entry.AccessType)"
-        Write-Host "Principal: $($entry.Principal)"
+        Write-Host "Principal: $(Convert-SIDToName $entry.Principal)"
         if ($entry.Deny) { Write-Host "Deny: $($entry.Deny)" }
         Write-Host "Status: $($entry.Status)" -ForegroundColor Cyan
         Write-Host "Reason: $($entry.Reason)" -ForegroundColor Cyan
