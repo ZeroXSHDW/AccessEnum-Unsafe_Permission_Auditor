@@ -8,16 +8,15 @@ param(
 
 # --- DYNAMIC OUTPUT AND CACHE FILE NAMES BASED ON INPUT ---
 $resolvedInputPath = (Resolve-Path $InputPath).ToString()
-$inputBase = [System.IO.Path]::GetFileNameWithoutExtension($resolvedInputPath)
-$inputBase = "$inputBase"  # ensure string
-$inputDir = [System.IO.Path]::GetDirectoryName($resolvedInputPath)
-$inputDir = "$inputDir"  # ensure string
+$inputDir = Split-Path $resolvedInputPath -Parent
+$inputFile = Split-Path $resolvedInputPath -Leaf
+$inputBase = $inputFile -replace '\.[^.]+$',''  # Remove last extension
 if (-not $OutputCsv -or $OutputCsv -eq "") {
-    $OutputCsv = Join-Path $inputDir ("$inputBase.csv")
+    $OutputCsv = Join-Path $inputDir ($inputBase + ".csv")
 }
-$ResolvedSIDsCacheFile = Join-Path $inputDir ("${inputBase}_ResolvedSIDs.json")
-$UnknownSIDsCacheFile = Join-Path $inputDir ("${inputBase}_UnknownSIDs.json")
-$MalformedPrincipalsCacheFile = Join-Path $inputDir ("${inputBase}_MalformedPrincipals.json")
+$ResolvedSIDsCacheFile = Join-Path $inputDir ($inputBase + "_ResolvedSIDs.json")
+$UnknownSIDsCacheFile = Join-Path $inputDir ($inputBase + "_UnknownSIDs.json")
+$MalformedPrincipalsCacheFile = Join-Path $inputDir ($inputBase + "_MalformedPrincipals.json")
 
 # --- LOAD CACHES IF PRESENT (robust for hashtable/array) ---
 function Load-HashtableCache {
