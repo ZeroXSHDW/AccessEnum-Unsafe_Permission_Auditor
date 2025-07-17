@@ -339,6 +339,17 @@ function Convert-SIDToName {
     return ($results -join ', ')
 }
 
+# Add this helper function near the top (after $WellKnownSIDs and before any function that uses GetFullPath)
+function Try-GetFullPath {
+    param($Path)
+    if (-not $Path -or $Path.Trim() -eq "") { return $null }
+    try {
+        return [System.IO.Path]::GetFullPath($Path)
+    } catch {
+        return $null
+    }
+}
+
 # --- END ADVANCED SID TO NAME MAPPING AND CONVERSION PLATFORM ---
 
 # Whitelist for acceptable Deny rules
@@ -354,20 +365,26 @@ function Is-InsecurePrincipal {
 
 function Is-CriticalSystemPath {
     param($Path)
-    $normalizedPath = [System.IO.Path]::GetFullPath($Path)
+    $normalizedPath = Try-GetFullPath $Path
+    if (-not $normalizedPath) { return $false }
     foreach ($critical in $CriticalSystemPaths) {
         if (-not $critical) { continue }
-        if ($normalizedPath -like "$([System.IO.Path]::GetFullPath($critical))*") { return $true }
+        $critNorm = Try-GetFullPath $critical
+        if (-not $critNorm) { continue }
+        if ($normalizedPath -like "$critNorm*") { return $true }
     }
     return $false
 }
 
 function Is-IgnoredPath {
     param($Path)
-    $normalizedPath = [System.IO.Path]::GetFullPath($Path)
+    $normalizedPath = Try-GetFullPath $Path
+    if (-not $normalizedPath) { return $false }
     foreach ($ignore in $IgnorePaths) {
         if (-not $ignore) { continue }
-        if ($normalizedPath -like "$([System.IO.Path]::GetFullPath($ignore))*") { return $true }
+        $ignNorm = Try-GetFullPath $ignore
+        if (-not $ignNorm) { continue }
+        if ($normalizedPath -like "$ignNorm*") { return $true }
     }
     return $false
 }
@@ -484,7 +501,7 @@ function Analyze-Entry {
     $principalSID = $Principal
     $principalLower = $principalName.ToLower()
     $accessLower = $AccessType.ToLower()
-    $normalizedPath = [System.IO.Path]::GetFullPath($Path)
+    $normalizedPath = Try-GetFullPath $Path
     $isCritical = Is-CriticalSystemPath $normalizedPath
     $isIgnored = Is-IgnoredPath $normalizedPath
 
