@@ -1,7 +1,9 @@
 param(
     [Parameter(Mandatory)]
     [string]$InputPath,
-    [string]$OutputCsv = "AccessEnum_Analysis.csv"
+    [string]$OutputCsv = "AccessEnum_Analysis.csv",
+    [string]$ProgressFile = "AccessEnum_Progress.json",
+    [int]$BatchSize = 1000
 )
 
 # Check if input file exists
@@ -688,9 +690,33 @@ $totalLines = $lines.Count
 Write-Host "Processing $totalLines entries..." -ForegroundColor Cyan
 $lineNum = 0
 
-# Write header to CSV
+# --- Check for progress file and resume if needed ---
+$startLine = 0
+if (Test-Path $ProgressFile) {
+    try {
+        $progressData = Get-Content $ProgressFile | ConvertFrom-Json
+        $startLine = [int]$progressData.LastProcessedLine + 1
+        Write-Host "Resuming from line $startLine (progress file found)..." -ForegroundColor Yellow
+    } catch {
+        Write-Host "Could not read progress file. Starting from beginning." -ForegroundColor Red
+        $startLine = 0
+    }
+}
+
+# If resuming, skip lines and append to CSV (skip header)
+if ($startLine -gt 0) {
+    $lines = $lines[$startLine..($lines.Count-1)]
+    $appendMode = $true
+} else {
+    $appendMode = $false
+}
+
+# Write header to CSV if not appending
 $csvHeader = "Path,AccessType,Principal,Deny,Status,Severity,ComplianceStatusDetail,Reason"
 $csvLines = @($csvHeader)
+if ($appendMode -and (Test-Path $OutputCsv)) {
+    $csvLines = @() # Don't write header if appending
+}
 
 # Detect PowerShell version
 $pwshVersion = $PSVersionTable.PSVersion.Major
