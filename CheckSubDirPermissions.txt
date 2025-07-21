@@ -1,0 +1,86 @@
+# PowerShell script to use AccessChk to audit permissions of all subdirectories under a specified root directory
+# Requires AccessChk.exe from Sysinternals to be in the system PATH or script directory
+
+# Check if a root directory is provided as a command-line argument
+if ($args.Count -eq 0) {
+    Write-Host "Error: Please provide a root directory path as a command-line argument."
+    Write-Host "Usage: .\CheckSubDirPermissions.ps1 <RootDirectoryPath>"
+    exit 1
+}
+
+# Get the root directory from command-line argument
+$RootDir = $args[0]
+
+# Validate if the directory exists
+if (-not (Test-Path $RootDir -PathType Container)) {
+    Write-Host "Error: The specified directory '$RootDir' does not exist or is not a directory."
+    exit 1
+}
+
+# Ensure AccessChk is available
+$AccessChkPath = "accesschk.exe"
+if (-not (Get-Command $AccessChkPath -ErrorAction SilentlyContinue)) {
+    Write-Host "Error: AccessChk.exe not found in PATH or script directory. Please ensure it is installed."
+    exit 1
+}
+
+# Define output CSV file path (in the script's directory with timestamp)
+$Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$OutputFile = ".\SubDirPermissionsReport_$Timestamp.csv"
+
+# Initialize CSV header
+$CsvHeader = "Directory,UserOrGroup,Permissions,AccessType"
+$CsvContent = @()
+$CsvContent += $CsvHeader
+
+# Get all subdirectories recursively
+$SubDirs = Get-ChildItem -Path $RootDir -Directory -Recurse -ErrorAction SilentlyContinue
+
+# Check permissions for each subdirectory using AccessChk
+foreach ($Dir in $SubDirs) {
+    Write-Host "Checking permissions for: $($Dir.FullName)"
+    
+    # Run AccessChk in directory mode (-d) to get permissions
+    $AccessChkOutput = & $AccessChkPath -d -q "$($Dir.FullName)" 2>&1
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Warning: Error checking permissions for '$($Dir.FullName)'. Skipping..."
+        continue
+    }
+    
+    # Parse AccessChk output
+    $CurrentUserOrGroup = ""
+    foreach ($Line in $AccessChkOutput) {
+        $Line = $Line.Trim()
+        
+        # Skip empty lines or lines starting with certain characters
+        if ([string]::IsNullOrWhiteSpace($Line) -or $Line.StartsWith("AccessChk") -or $Line.StartsWith("---")) {
+            continue
+        }
+        
+        # Check if the line is a user or group name
+        if ($Line -notmatch "^\s") {
+            $CurrentUserOrGroup = $Line
+        }
+        else {
+            # Line is a permission entry
+            $Permission = $Line.Trim()
+            # Determine access type (Allow or Deny)
+            $AccessType = if ($Permission -match "DENY") { "Deny" } else { "Allow" }
+            # Clean up permission string (remove DENY prefix if present)
+            $Permission = $Permission -replace "^DENY\s*", ""
+            
+            # Add to CSV content
+            $CsvContent += "$($Dir.FullName),$CurrentUserOrGroup,$Permission,$AccessType"
+        }
+    }
+}
+
+# Write to CSV file
+$CsvContent | Out-File -FilePath $OutputFile -Encoding UTF8
+Write-Host "Permissions report generated at: $OutputFile"
+
+# Summary
+$TotalDirs = $SubDirs.Count
+Write-Host "Total directories scanned: $TotalDirs"
+Write-Host "Script completed."
