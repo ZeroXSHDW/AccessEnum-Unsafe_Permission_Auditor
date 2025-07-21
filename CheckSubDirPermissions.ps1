@@ -1,63 +1,7 @@
 # PowerShell script to use AccessChk to audit permissions of all subdirectories under a specified root directory
 # Assumes AccessChk.exe is in the same directory as the script
-# Enhanced with privilege elevation, detailed error logging, and symbolic link filtering
-
-# Function to enable privileges (SeSecurityPrivilege and SeBackupPrivilege)
-function Enable-Privilege {
-    param (
-        [string]$Privilege
-    )
-    $whoami = whoami /priv
-    if ($whoami -notmatch $Privilege) {
-        Write-Host "Attempting to enable $Privilege..."
-        try {
-            # Use a simple .NET method to adjust token privileges (requires admin)
-            Add-Type -TypeDefinition @"
-                using System;
-                using System.Runtime.InteropServices;
-                public class TokenAdjuster {
-                    [DllImport("advapi32.dll", SetLastError=true)]
-                    public static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges, ref TOKEN_PRIVILEGES NewState, int BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
-                    [DllImport("advapi32.dll", SetLastError=true)]
-                    public static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, ref Int64 lpLuid);
-                    [StructLayout(LayoutKind.Sequential)]
-                    public struct TOKEN_PRIVILEGES {
-                        public int PrivilegeCount;
-                        public Int64 Luid;
-                       车辆
-                        public int Attributes;
-                    }
-                    public const int SE_PRIVILEGE_ENABLED = 0x00000002;
-                    public static void EnablePrivilege(string privilege) {
-                        IntPtr token;
-                        TOKEN_PRIVILEGES tp;
-                        tp.PrivilegeCount = 1;
-                        tp.Luid = 0;
-                        tp.Attributes = SE_PRIVILEGE_ENABLED;
-                        if (!OpenThreadToken(GetCurrentThread(), 0x0020, true, out token)) {
-                            OpenProcessToken(GetCurrentProcess(), 0x0020 | 0x0008, out token);
-                        }
-                        LookupPrivilegeValue(null, privilege, ref tp.Luid);
-                        AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
-                    }
-                    [DllImport("kernel32.dll")]
-                    public static extern IntPtr GetCurrentThread();
-                    [DllImport("kernel32.dll")]
-                    public static extern IntPtr GetCurrentProcess();
-                    [DllImport("advapi32.dll", SetLastError=true)]
-                    public static extern bool OpenThreadToken(IntPtr ThreadHandle, int DesiredAccess, bool OpenAsSelf, out IntPtr TokenHandle);
-                    [DllImport("advapi32.dll", SetLastError=true)]
-                    public static extern bool OpenProcessToken(IntPtr ProcessHandle, int DesiredAccess, out IntPtr TokenHandle);
-                }
-"@
-            [TokenAdjuster]::EnablePrivilege($Privilege)
-            Write-Host "$Privilege enabled successfully."
-        }
-        catch {
-            Write-Host "Warning: Failed to enable $Privilege - $($_.Exception.Message)"
-        }
-    }
-}
+# Enhanced with detailed error logging, symbolic link filtering, and Get-Acl fallback
+# Does not attempt to set SeSecurityPrivilege, SeBackupPrivilege, or other privileges
 
 # Check if a root directory is provided as a command-line argument
 if ($args.Count -eq 0) {
@@ -84,17 +28,13 @@ if (-not (Test-Path $AccessChkPath)) {
     exit 1
 }
 
-# Attempt to enable necessary privileges
-Enable-Privilege -Privilege "SeSecurityPrivilege"
-Enable-Privilege -Privilege "SeBackupPrivilege"
-
 # Define output CSV and log file paths (in the script's directory with timestamp)
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $OutputFile = ".\SubDirPermissionsReport_$Timestamp.csv"
 $ErrorLogFile = ".\SubDirPermissionsErrors_$Timestamp.log"
 
 # Initialize CSV header and content
-$CsvHeader = "Directory,UserOrGroup,Permissions,AccessType"
+$CsvHeader = "Directory,UserOrGroup,Permissions,AccessType,Source"
 $CsvContent = @()
 $CsvContent += $CsvHeader
 
@@ -120,10 +60,11 @@ $SubDirs = Get-ChildItem -Path $RootDir -Directory -Recurse -ErrorAction Silentl
         (-not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint))
     }
 
-# Track skipped directories
+# Track skipped and fallback directories
 $SkippedDirs = @()
+$FallbackDirs = @()
 
-# Check permissions for each subdirectory using AccessChk
+# Check permissions for each subdirectory using AccessChk, with Get-Acl fallback
 foreach ($Dir in $SubDirs) {
     $DirPath = $Dir.FullName
     Write-Host "Checking permissions for: $DirPath"
@@ -140,49 +81,72 @@ foreach ($Dir in $SubDirs) {
         continue
     }
     
-    # Run AccessChk in directory mode (-d) to get permissions
+    # Try AccessChk first
+    $AccessChkSuccess = $false
     try {
         $AccessChkOutput = & $AccessChkPath -d -q "$DirPath" 2>&1
-        if ($LASTEXITCODE -ne 0) {
+        if ($LASTEXITCODE -eq 0) {
+            $AccessChkSuccess = $true
+        }
+        else {
             $ErrorMessage = "AccessChk failed for: $DirPath - Exit Code: $LASTEXITCODE - Output: $AccessChkOutput"
             Write-Host "Warning: $ErrorMessage"
             $ErrorLog += $ErrorMessage
-            $SkippedDirs += $DirPath
-            continue
         }
     }
     catch {
         $ErrorMessage = "AccessChk error for: $DirPath - Error: $($_.Exception.Message)"
         Write-Host "Warning: $ErrorMessage"
         $ErrorLog += $ErrorMessage
-        $SkippedDirs += $DirPath
-        continue
     }
     
-    # Parse AccessChk output
-    $CurrentUserOrGroup = ""
-    foreach ($Line in $AccessChkOutput) {
-        $Line = $Line.Trim()
-        
-        # Skip empty lines or lines starting with certain characters
-        if ([string]::IsNullOrWhiteSpace($Line) -or $Line.StartsWith("AccessChk") -or $Line.StartsWith("---")) {
-            continue
-        }
-        
-        # Check if the line is a user or group name
-        if ($Line -notmatch "^\s") {
-            $CurrentUserOrGroup = $Line
-        }
-        else {
-            # Line is a permission entry
-            $Permission = $Line.Trim()
-            # Determine access type (Allow or Deny)
-            $AccessType = if ($Permission -match "DENY") { "Deny" } else { "Allow" }
-            # Clean up permission string (remove DENY prefix if present)
-            $Permission = $Permission -replace "^DENY\s*", ""
+    # Parse AccessChk output if successful
+    if ($AccessChkSuccess) {
+        $CurrentUserOrGroup = ""
+        foreach ($Line in $AccessChkOutput) {
+            $Line = $Line.Trim()
             
-            # Add to CSV content
-            $CsvContent += "$DirPath,$CurrentUserOrGroup,$Permission,$AccessType"
+            # Skip empty lines or lines starting with certain characters
+            if ([string]::IsNullOrWhiteSpace($Line) -or $Line.StartsWith("AccessChk") -or $Line.StartsWith("---")) {
+                continue
+            }
+            
+            # Check if the line is a user or group name
+            if ($Line -notmatch "^\s") {
+                $CurrentUserOrGroup = $Line
+            }
+            else {
+                # Line is a permission entry
+                $Permission = $Line.Trim()
+                # Determine access type (Allow or Deny)
+                $AccessType = if ($Permission -match "DENY") { "Deny" } else { "Allow" }
+                # Clean up permission string (remove DENY prefix if present)
+                $Permission = $Permission -replace "^DENY\s*", ""
+                
+                # Add to CSV content with AccessChk as source
+                $CsvContent += "$DirPath,$CurrentUserOrGroup,$Permission,$AccessType,AccessChk"
+            }
+        }
+    }
+    else {
+        # Fallback to Get-Acl for failed directories
+        $FallbackDirs += $DirPath
+        Write-Host "Attempting fallback with Get-Acl for: $DirPath"
+        try {
+            $Acl = Get-Acl -Path $DirPath -ErrorAction Stop
+            foreach ($Access in $Acl.Access) {
+                $UserOrGroup = $Access.IdentityReference
+                $Permissions = $Access.FileSystemRights
+                $AccessType = if ($Access.AccessControlType -eq "Deny") { "Deny" } else { "Allow" }
+                # Add to CSV content with Get-Acl as source
+                $CsvContent += "$DirPath,$UserOrGroup,$Permissions,$AccessType,Get-Acl"
+            }
+        }
+        catch {
+            $ErrorMessage = "Get-Acl failed for: $DirPath - Error: $($_.Exception.Message)"
+            Write-Host "Warning: $ErrorMessage"
+            $ErrorLog += $ErrorMessage
+            $SkippedDirs += $DirPath
         }
     }
 }
@@ -193,9 +157,14 @@ Write-Host "Permissions report generated at: $OutputFile"
 
 # Write error log
 $ErrorLog += "Total directories skipped: $($SkippedDirs.Count)"
+$ErrorLog += "Total directories using Get-Acl fallback: $($FallbackDirs.Count)"
 if ($SkippedDirs.Count -gt 0) {
     $ErrorLog += "Skipped directories:"
     $ErrorLog += $SkippedDirs
+}
+if ($FallbackDirs.Count -gt 0) {
+    $ErrorLog += "Fallback directories (using Get-Acl):"
+    $ErrorLog += $FallbackDirs
 }
 $ErrorLog | Out-File -FilePath $ErrorLogFile -Encoding UTF8
 Write-Host "Error log generated at: $ErrorLogFile"
@@ -204,6 +173,7 @@ Write-Host "Error log generated at: $ErrorLogFile"
 $TotalDirs = $SubDirs.Count
 $ProcessedDirs = $TotalDirs - $SkippedDirs.Count
 Write-Host "Total directories scanned: $TotalDirs"
-Write-Host "Directories processed: $ProcessedDirs"
+Write-Host "Directories processed (AccessChk): $($ProcessedDirs - $FallbackDirs.Count)"
+Write-Host "Directories processed (Get-Acl fallback): $($FallbackDirs.Count)"
 Write-Host "Directories skipped: $($SkippedDirs.Count)"
 Write-Host "Script completed."
