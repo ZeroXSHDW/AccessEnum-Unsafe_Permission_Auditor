@@ -1,5 +1,5 @@
 # PowerShell script to use AccessChk to audit permissions of all subdirectories under a specified root directory
-# Requires AccessChk.exe from Sysinternals to be in the system PATH or script directory
+# Assumes AccessChk.exe is in the same directory as the script
 
 # Check if a root directory is provided as a command-line argument
 if ($args.Count -eq 0) {
@@ -17,10 +17,12 @@ if (-not (Test-Path $RootDir -PathType Container)) {
     exit 1
 }
 
-# Ensure AccessChk is available
-$AccessChkPath = "accesschk.exe"
-if (-not (Get-Command $AccessChkPath -ErrorAction SilentlyContinue)) {
-    Write-Host "Error: AccessChk.exe not found in PATH or script directory. Please ensure it is installed."
+# Define AccessChk path in the current directory
+$AccessChkPath = ".\accesschk.exe"
+
+# Ensure AccessChk exists in the current directory
+if (-not (Test-Path $AccessChkPath)) {
+    Write-Host "Error: accesschk.exe not found in the current directory. Please ensure it is placed in the same directory as this script."
     exit 1
 }
 
